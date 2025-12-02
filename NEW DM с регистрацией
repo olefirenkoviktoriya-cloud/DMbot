@@ -1,0 +1,98 @@
+import logging
+import requests
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram import F
+
+BOT_TOKEN = "ТВОЙ_ТОКЕН_БОТА"
+
+# 👉 ТВОЙ НОВЫЙ Google Apps Script URL
+GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw-1sEGiOIqIpHpjIPLB8LmaBnystny3iTZ7wHxVlezr0ttzDhk45Lf30VG8MRb5V2akQ/exec"
+
+logging.basicConfig(level=logging.INFO)
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# Память о пользователях, которые уже вводили свои данные
+users_data = {}
+
+class Form(StatesGroup):
+    fio = State()
+    position = State()
+    department = State()
+    suggestion = State()
+
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+
+    # Если человек уже заполнял ФИО/должность/отдел
+    if message.from_user.id in users_data:
+        await message.answer("Напиши, пожалуйста, своё предложение:")
+        await state.set_state(Form.suggestion)
+    else:
+        await message.answer("Привет! Давай познакомимся 😊\n\nВведите ваше ФИО:")
+        await state.set_state(Form.fio)
+
+
+@dp.message(Form.fio)
+async def process_fio(message: types.Message, state: FSMContext):
+    await state.update_data(fio=message.text)
+    await message.answer("Введите вашу должность:")
+    await state.set_state(Form.position)
+
+
+@dp.message(Form.position)
+async def process_position(message: types.Message, state: FSMContext):
+    await state.update_data(position=message.text)
+    await message.answer("Введите ваш отдел:")
+    await state.set_state(Form.department)
+
+
+@dp.message(Form.department)
+async def process_department(message: types.Message, state: FSMContext):
+    await state.update_data(department=message.text)
+
+    # Сохраняем в память
+    users_data[message.from_user.id] = await state.get_data()
+
+    await message.answer("Отлично! Теперь напишите своё предложение:")
+    await state.set_state(Form.suggestion)
+
+
+@dp.message(Form.suggestion)
+async def process_suggestion(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    if user_id not in users_data:
+        await message.answer("Ошибка — не найдены ваши данные. Введите /start")
+        return
+
+    base = users_data[user_id]
+
+    data = {
+        "fio": base["fio"],
+        "position": base["position"],
+        "department": base["department"],
+        "suggestion": message.text
+    }
+
+    try:
+        response = requests.post(GOOGLE_SCRIPT_URL, data=data)
+
+        if response.status_code == 200:
+            await message.answer("Ваше предложение успешно отправлено! ✅")
+        else:
+            await message.answer("Ошибка при отправке. Попробуйте позже ❌")
+    except Exception as e:
+        await message.answer("Не удалось отправить данные. Попробуйте позже ❌")
+
+    await state.clear()
+
+
+if __name__ == "__main__":
+    dp.run_polling(bot)
