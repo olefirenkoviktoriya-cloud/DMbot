@@ -2,97 +2,124 @@ import logging
 import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram import F
 
-BOT_TOKEN = "ТВОЙ_ТОКЕН_БОТА"
-
-# 👉 ТВОЙ НОВЫЙ Google Apps Script URL
-GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw-1sEGiOIqIpHpjIPLB8LmaBnystny3iTZ7wHxVlezr0ttzDhk45Lf30VG8MRb5V2akQ/exec"
-
 logging.basicConfig(level=logging.INFO)
 
+BOT_TOKEN = "8385165542:AAGnUqMG_NkNl6KFhzjFk4QYQ__BOpKK9CY"
+
+# Твой Google Apps Script URL
+GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw-1sEGiOIqIpHpjIPLB8LmaBnystny3iTZ7wHxVlezr0ttzDhk45Lf30VG8MRb5V2akQ/exec"
+
+
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
 
-# Память о пользователях, которые уже вводили свои данные
-users_data = {}
 
+# FSM состояния
 class Form(StatesGroup):
-    fio = State()
+    name = State()
     position = State()
     department = State()
     suggestion = State()
 
 
+# ------------------------- Проверка: есть ли пользователь -------------------------
+
+def check_user_exists(user_id: int) -> bool:
+    """
+    Отправляет запрос GET к Apps Script, чтобы узнать: есть ли пользователь в таблице.
+    """
+    try:
+        response = requests.get(
+            GOOGLE_SCRIPT_URL,
+            params={"check_user": user_id},
+            timeout=10
+        )
+        data = response.json()
+        return data.get("exists", False)
+    except Exception as e:
+        print("Ошибка проверки пользователя:", e)
+        return False
+
+
+# ------------------------------- Команда /start ---------------------------------
+
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
+async def start(message: types.Message, state: FSMContext):
 
-    # Если человек уже заполнял ФИО/должность/отдел
-    if message.from_user.id in users_data:
-        await message.answer("Напиши, пожалуйста, своё предложение:")
+    user_exists = check_user_exists(message.from_user.id)
+
+    if user_exists:
+        # Пользователь уже есть → сразу спрашиваем предложение
         await state.set_state(Form.suggestion)
+        await message.answer("Рад снова видеть! Напиши своё новое предложение 👇")
     else:
-        await message.answer("Привет! Давай познакомимся 😊\n\nВведите ваше ФИО:")
-        await state.set_state(Form.fio)
+        # Новый пользователь → собираем ФИО, должность, отдел
+        await state.set_state(Form.name)
+        await message.answer("Привет! Давай знакомиться.\n\nВведи, пожалуйста, своё ФИО:")
 
 
-@dp.message(Form.fio)
-async def process_fio(message: types.Message, state: FSMContext):
-    await state.update_data(fio=message.text)
-    await message.answer("Введите вашу должность:")
+# ------------------------------- ФИО ---------------------------------
+
+@dp.message(Form.name)
+async def process_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text)
     await state.set_state(Form.position)
+    await message.answer("Отлично! Теперь укажи свою должность:")
 
+
+# ----------------------------- Должность -----------------------------------
 
 @dp.message(Form.position)
 async def process_position(message: types.Message, state: FSMContext):
     await state.update_data(position=message.text)
-    await message.answer("Введите ваш отдел:")
     await state.set_state(Form.department)
+    await message.answer("Спасибо! Теперь укажи свой отдел:")
 
+
+# ----------------------------- Отдел --------------------------------------
 
 @dp.message(Form.department)
 async def process_department(message: types.Message, state: FSMContext):
     await state.update_data(department=message.text)
-
-    # Сохраняем в память
-    users_data[message.from_user.id] = await state.get_data()
-
-    await message.answer("Отлично! Теперь напишите своё предложение:")
     await state.set_state(Form.suggestion)
+    await message.answer("Супер! Теперь напиши своё предложение:")
 
+
+# ---------------------------- Предложение ---------------------------------
 
 @dp.message(Form.suggestion)
 async def process_suggestion(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
+    await state.update_data(suggestion=message.text)
+    data = await state.get_data()
 
-    if user_id not in users_data:
-        await message.answer("Ошибка — не найдены ваши данные. Введите /start")
-        return
-
-    base = users_data[user_id]
-
-    data = {
-        "fio": base["fio"],
-        "position": base["position"],
-        "department": base["department"],
-        "suggestion": message.text
+    payload = {
+        "user_id": message.from_user.id,
+        "name": data.get("name", ""),
+        "position": data.get("position", ""),
+        "department": data.get("department", ""),
+        "suggestion": data["suggestion"],
     }
 
     try:
-        response = requests.post(GOOGLE_SCRIPT_URL, data=data)
+        response = requests.post(GOOGLE_SCRIPT_URL, json=payload, timeout=10)
 
         if response.status_code == 200:
-            await message.answer("Ваше предложение успешно отправлено! ✅")
+            await message.answer("Спасибо! Предложение успешно записано ✅")
         else:
-            await message.answer("Ошибка при отправке. Попробуйте позже ❌")
+            await message.answer("Не удалось записать данные. Попробуйте позже.")
+
     except Exception as e:
-        await message.answer("Не удалось отправить данные. Попробуйте позже ❌")
+        print("Ошибка:", e)
+        await message.answer("Ошибка при отправке данных. Попробуйте позже.")
 
     await state.clear()
 
+
+# ------------------------------ Запуск бота ----------------------------------
 
 if __name__ == "__main__":
     dp.run_polling(bot)
